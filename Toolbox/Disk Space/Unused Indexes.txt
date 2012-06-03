@@ -1,0 +1,92 @@
+--Drop table #I
+
+Create table #I (
+	database_id smallint,
+	object_id int,
+	index_id int,
+	db_name sysname,
+	schema_name sysname,
+	object_name sysname,
+	index_name sysname,
+	is_primary_key bit,
+	is_unique_constraint bit,
+	is_unique bit)
+
+
+exec sp_MSforeachdb '
+Use ?;
+Insert into #I (
+	database_id,
+	object_id,
+	index_id,
+	db_name,
+	schema_name,
+	object_name,
+	index_name,
+	is_primary_key,
+	is_unique_constraint,
+	is_unique)
+ Select
+	DB_ID(),
+	object_id,
+	index_id,
+	DB_NAME(),
+	OBJECT_SCHEMA_NAME(object_id),
+	OBJECT_NAME(object_id),
+	name,
+	is_primary_key,
+	is_unique_constraint,
+	is_unique
+  From sys.indexes
+  Where name is not null'
+
+
+Select
+	I.db_name,
+	I.schema_name,
+	I.object_name,
+	I.index_name,
+	(page_count * 8) / (1024.0 * 1024) as [Size (GB)],
+	Updates
+ From (
+	Select --top 1000
+		database_id,
+		object_id,
+		index_id,
+		user_updates + system_updates as Updates
+	 From Sys.dm_db_index_usage_stats
+	 Where
+		last_user_seek is null 
+		and last_user_scan is null 
+		and last_user_lookup is null
+		and last_system_seek is null 
+		and last_system_scan is null 
+		and last_system_lookup is null
+		and database_id > 5
+  ) as UnusedIndexes
+ Inner Join #I as I on
+	UnusedIndexes.database_id = I.database_id and
+	UnusedIndexes.object_id = I.object_id and
+	UnusedIndexes.index_id = I.index_id
+ Cross Apply dbo.dm_db_index_physical_stats(
+	UnusedIndexes.database_id,
+	UnusedIndexes.object_id,
+	UnusedIndexes.index_id)
+ Where
+	is_primary_key = 0 and
+	is_unique_constraint = 0 and
+	is_unique = 0
+Go
+
+Create function dbo.dm_db_index_physical_stats (
+	@database_id smallint,
+	@object_id int,
+	@index_id int)
+ returns @PS table(page_count bigint) as
+ Begin
+	Insert into @PS (page_count)
+	Select page_count
+	 From sys.dm_db_index_physical_stats(@database_id, @object_id, @index_id, NULL, 'LIMITED')
+	return
+ End
+
